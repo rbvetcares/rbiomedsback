@@ -94,6 +94,33 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     }
 });
 
+// Helper to parse date safely without timezone shifts
+const parseDate = (dateStr) => {
+    if (!dateStr) return new Date();
+
+    // Check if it's already a Date object
+    if (dateStr instanceof Date) return dateStr;
+
+    // If it's a string like "February 13, 2026" (formatted by toJSON)
+    // or "2026-02-13" (sent by frontend)
+    try {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+            // If it's YYYY-MM-DD from the frontend input, we want to treat it as local date
+            // to avoid timezone shifts when it's just a "day" value.
+            if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                const [year, month, day] = dateStr.split('-').map(Number);
+                return new Date(year, month - 1, day);
+            }
+            return d;
+        }
+    } catch (e) {
+        console.error("Error parsing date:", e);
+    }
+
+    return new Date();
+};
+
 // Routes
 app.get('/api/articles', async (req, res) => {
     try {
@@ -117,6 +144,7 @@ app.get('/api/articles', async (req, res) => {
                 query = { sites: site };
             }
         }
+        // Primary sort by date (manual), secondary by createdAt (order of entry for same day)
         const articles = await Article.find(query).sort({ date: -1, createdAt: -1 });
         res.json(articles);
     } catch (error) {
@@ -127,17 +155,13 @@ app.get('/api/articles', async (req, res) => {
 app.post('/api/articles', async (req, res) => {
     try {
         const { title, description, image, category, sites, date } = req.body;
-        console.log("Backend received article creation request:", { title, date });
 
-        // Helper to parse date safely without timezone shifts
-        const parseDate = (dateStr) => {
-            if (!dateStr) return new Date();
-
-            // dateStr is expected to be YYYY-MM-DD
-            const [year, month, day] = dateStr.split('-').map(Number);
-            // Create date using local time parts
-            return new Date(year, month - 1, day);
-        };
+        const parsedDate = parseDate(date);
+        console.log("Creating article:", {
+            title,
+            receivedDate: date,
+            parsedDate: parsedDate.toISOString()
+        });
 
         const newArticle = new Article({
             title,
@@ -145,12 +169,13 @@ app.post('/api/articles', async (req, res) => {
             image: image || undefined,
             category: category || undefined,
             sites: sites || ["rbiomeds"],
-            date: parseDate(date)
+            date: parsedDate
         });
 
         await newArticle.save();
         res.status(201).json(newArticle);
     } catch (error) {
+        console.error("Failed to create article:", error);
         res.status(500).json({ error: "Failed to create article" });
     }
 });
@@ -159,11 +184,8 @@ app.put('/api/articles/:id', async (req, res) => {
     try {
         const { title, description, image, category, sites, date } = req.body;
 
-        const parseDate = (dateStr) => {
-            if (!dateStr) return null;
-            const [year, month, day] = dateStr.split('-').map(Number);
-            return new Date(year, month - 1, day);
-        };
+        const updatedDate = date ? parseDate(date) : undefined;
+        console.log("Updating article:", { id: req.params.id, title, receivedDate: date, parsedDate: updatedDate?.toISOString() });
 
         const updateData = {
             title,
@@ -173,9 +195,8 @@ app.put('/api/articles/:id', async (req, res) => {
             sites: sites || ["rbiomeds"]
         };
 
-        const manualDate = parseDate(date);
-        if (manualDate) {
-            updateData.date = manualDate;
+        if (updatedDate) {
+            updateData.date = updatedDate;
         }
 
         const updatedArticle = await Article.findByIdAndUpdate(
